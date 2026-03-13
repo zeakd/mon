@@ -8,11 +8,15 @@ struct InkMenuBarLabel: View {
     var body: some View {
         Group {
             if viewModel.sessions.isEmpty {
-                // 세션 없으면 정적 아이콘
                 Image(systemName: "drop")
             } else if let image = animator.currentImage {
                 Image(nsImage: image)
+            } else {
+                Image(systemName: "drop.fill")
             }
+        }
+        .task {
+            animator.updateSessions(viewModel.sessions, idleTimeout: viewModel.idleTimeout)
         }
         .onChange(of: viewModel.sessions) { _, newSessions in
             animator.updateSessions(newSessions, idleTimeout: viewModel.idleTimeout)

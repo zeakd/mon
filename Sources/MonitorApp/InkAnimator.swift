@@ -2,53 +2,46 @@ import AppKit
 import Foundation
 import MonitorKit
 
-/// 세션 상태를 잉크 방울로 변환하고 프레임 애니메이션을 구동
 @MainActor
 final class InkAnimator: ObservableObject {
     @Published var currentImage: NSImage?
 
     private let renderer: InkRenderer
-    private var drops: [String: InkDrop] = [:]  // session.id → drop
+    private let settings = AnimationSettings.shared
+    private var drops: [String: InkDrop] = [:]
     private var timer: Timer?
     private var tick: Int = 0
 
-    // 타이밍
-    private let fps: TimeInterval = 1.0 / 10  // 10fps, 프레임 교체 단위
-    private let runningCycleTicks = 3   // 0.3초 = 3 ticks at 10fps
-    private let waitingCycleTicks = 15  // 1.5초 = 15 ticks at 10fps
+    private let fps: TimeInterval = 1.0 / 10
 
     init(retina: Bool = true) {
         self.renderer = InkRenderer(retina: retina)
         startTimer()
     }
 
-    /// 세션 목록이 바뀔 때 호출
     func updateSessions(_ sessions: [Session], idleTimeout: TimeInterval) {
         let activeIds = Set(sessions.map(\.id))
 
-        // 사라진 세션의 drop 제거 (done 증발은 추후 구현)
         for id in drops.keys where !activeIds.contains(id) {
             drops.removeValue(forKey: id)
         }
 
-        // 새 세션에 drop 생성
         for session in sessions {
             let isActive = session.isActive(timeout: idleTimeout)
             if var existing = drops[session.id] {
                 existing.isActive = isActive
                 drops[session.id] = existing
             } else {
-                let drop = createDrop(for: session, isActive: isActive)
-                drops[session.id] = drop
+                drops[session.id] = createDrop(for: session, isActive: isActive)
             }
         }
     }
 
     private func createDrop(for session: Session, isActive: Bool) -> InkDrop {
-        // 무작위 위치, 기존 방울과 최소 간격
         let w = Double(renderer.width)
         let h = Double(renderer.height)
         let baseR = renderer.useRetina ? 5.0 : 3.0
+        let driftRange = settings.driftRange
 
         var cx: Double
         var cy: Double
@@ -60,13 +53,19 @@ final class InkAnimator: ObservableObject {
         } while attempts < 20 && drops.values.contains(where: { d in
             let dx = d.centerX - cx
             let dy = d.centerY - cy
-            return sqrt(dx * dx + dy * dy) < baseR * 2.5
+            return sqrt(dx * dx + dy * dy) < baseR * 3
         })
 
         return InkDrop(
-            centerX: cx, centerY: cy,
+            centerX: cx,
+            centerY: cy,
             baseRadius: baseR,
-            isActive: isActive)
+            isActive: isActive,
+            phaseOffset: Double.random(in: 0...1),
+            driftAngle: Double.random(in: 0...(.pi * 2)),
+            driftSpeed: Double.random(in: driftRange),
+            noiseSeed: Double.random(in: 0...100)
+        )
     }
 
     private func startTimer() {
@@ -79,23 +78,49 @@ final class InkAnimator: ObservableObject {
 
     private func advance() {
         tick += 1
+        let w = Double(renderer.width)
+        let h = Double(renderer.height)
+        let cycleTicks = settings.runningCycleTicks
+        let waitTicks = settings.waitingCycleTicks
+        let grow = settings.actualGrowRate
 
-        // 각 방울의 애니메이션 상태 업데이트
         for (id, var drop) in drops {
             if drop.isActive {
-                // running: breathing 주기
-                let phase = Double(tick % (runningCycleTicks * 2)) / Double(runningCycleTicks * 2)
-                drop.breathPhase = phase
+                let rawPhase = Double(tick) / Double(cycleTicks) + drop.phaseOffset * Double(cycleTicks)
+                drop.breathPhase = rawPhase.truncatingRemainder(dividingBy: 1.0)
+
+                drop.centerX += cos(drop.driftAngle) * drop.driftSpeed
+                drop.centerY += sin(drop.driftAngle) * drop.driftSpeed * 0.5
+
+                let margin = drop.baseRadius + 1
+                if drop.centerX < margin || drop.centerX > w - margin {
+                    drop.driftAngle = .pi - drop.driftAngle
+                    drop.centerX = max(margin, min(w - margin, drop.centerX))
+                }
+                if drop.centerY < margin || drop.centerY > h - margin {
+                    drop.driftAngle = -drop.driftAngle
+                    drop.centerY = max(margin, min(h - margin, drop.centerY))
+                }
+
+                if tick % 40 == 0 {
+                    drop.driftAngle += Double.random(in: -0.2...0.2)
+                }
+
+                let maxR = (renderer.useRetina ? 5.0 : 3.0) * 2.0
+                drop.baseRadius = min(drop.baseRadius + grow, maxR)
+
             } else {
-                // waiting: 가장자리 토글
-                if tick % waitingCycleTicks == 0 {
+                if tick % waitTicks == 0 {
                     drop.showEdge.toggle()
                 }
+                drop.centerX += cos(drop.driftAngle) * drop.driftSpeed * 0.2
+                drop.centerY += sin(drop.driftAngle) * drop.driftSpeed * 0.1
             }
+
+            drop.noiseSeed += 0.01
             drops[id] = drop
         }
 
-        // 프레임 렌더 → 이미지
         let frame = renderer.renderFrame(drops: Array(drops.values))
         currentImage = renderer.frameToImage(frame)
     }

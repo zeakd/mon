@@ -3,22 +3,30 @@ import Foundation
 
 /// 잉크 방울 하나의 상태
 struct InkDrop {
-    let centerX: Double
-    let centerY: Double
+    var centerX: Double
+    var centerY: Double
     var baseRadius: Double
-    var isActive: Bool  // true=running(breathing), false=idle(blinking)
+    var isActive: Bool
 
-    /// breathing phase (0.0 ~ 1.0) — running 전용
+    /// 개별 phase offset — 방울마다 다른 리듬
+    var phaseOffset: Double
+
+    /// breathing phase (0.0 ~ 1.0)
     var breathPhase: Double = 0
 
     /// blink state — idle 전용
     var showEdge: Bool = true
+
+    /// 드리프트 — 방울이 천천히 떠다님
+    var driftAngle: Double
+    var driftSpeed: Double
+
+    /// 유기적 형태를 위한 noise seed
+    var noiseSeed: Double
 }
 
 /// 픽셀 잉크 프레임을 생성하고 NSImage로 변환
 final class InkRenderer {
-    // 1x: 10h × 36w, levels 0-3
-    // 2x: 20h × 72w, levels 0-4
     let useRetina: Bool
     let width: Int
     let height: Int
@@ -31,7 +39,6 @@ final class InkRenderer {
         self.maxLevel = retina ? 4 : 3
     }
 
-    /// 모든 방울을 합성하여 하나의 프레임 생성
     func renderFrame(drops: [InkDrop]) -> [[Int]] {
         var canvas = Array(repeating: Array(repeating: 0, count: width), count: height)
 
@@ -43,7 +50,6 @@ final class InkRenderer {
         return canvas
     }
 
-    /// 프레임을 NSImage (template) 로 변환
     func frameToImage(_ frame: [[Int]]) -> NSImage {
         let scale = useRetina ? 2 : 1
         let ptW = width / scale
@@ -54,10 +60,9 @@ final class InkRenderer {
 
         let ctx = NSGraphicsContext.current!.cgContext
 
-        // 밀도별 알파값
         let alphas: [CGFloat] = useRetina
-            ? [0, 0.2, 0.4, 0.7, 1.0]   // 2x: 5단계 (0=빈, 1=░, 2=▒, 3=▓, 4=█)
-            : [0, 0.3, 0.7, 1.0]          // 1x: 4단계 (0=빈, 1=░, 2=▓, 3=█)
+            ? [0, 0.15, 0.35, 0.65, 1.0]
+            : [0, 0.25, 0.6, 1.0]
 
         let pixelSize = 1.0 / CGFloat(scale)
 
@@ -84,45 +89,67 @@ final class InkRenderer {
 
     private func currentRadius(for drop: InkDrop) -> Double {
         if drop.isActive {
-            // breathing: base ± 30%
             let breath = sin(drop.breathPhase * .pi * 2)
-            return drop.baseRadius * (1.0 + 0.3 * breath)
+            let amp = AnimationSettings.shared.breathAmplitude
+            return drop.baseRadius * (1.0 + amp * breath)
         } else {
-            return drop.baseRadius
+            return drop.baseRadius * 0.85
         }
     }
 
     private func renderDrop(on canvas: inout [[Int]], drop: InkDrop, radius r: Double) {
-        for y in 0..<height {
-            for x in 0..<width {
-                let dx = Double(x) - drop.centerX
-                let dy = Double(y) - drop.centerY
+        let cx = drop.centerX
+        let cy = drop.centerY
+
+        // 바운딩 박스로 범위 제한
+        let minX = max(0, Int(cx - r - 2))
+        let maxX = min(width - 1, Int(cx + r + 2))
+        let minY = max(0, Int(cy - r - 2))
+        let maxY = min(height - 1, Int(cy + r + 2))
+
+        for y in minY...maxY {
+            for x in minX...maxX {
+                let dx = Double(x) - cx
+                let dy = Double(y) - cy
                 let d = sqrt(dx * dx + dy * dy)
 
-                guard d < r else { continue }
+                // 유기적 윤곽: 각도에 따라 반경이 울퉁불퉁
+                let angle = atan2(dy, dx)
+                let noise = organicNoise(angle: angle, seed: drop.noiseSeed, phase: drop.breathPhase)
+                let effectiveR = r * (1.0 + 0.25 * noise)
+
+                guard d < effectiveR else { continue }
+
+                // 정규화된 거리 (0 = 중심, 1 = 가장자리)
+                let normalD = d / effectiveR
 
                 let level: Int
                 if useRetina {
-                    // 4단계: █(4) ▓(3) ▒(2) ░(1)
-                    if d < r * 0.25 { level = 4 }
-                    else if d < r * 0.5 { level = 3 }
-                    else if d < r * 0.75 { level = 2 }
+                    if normalD < 0.25 { level = 4 }
+                    else if normalD < 0.50 { level = 3 }
+                    else if normalD < 0.75 { level = 2 }
                     else { level = 1 }
                 } else {
-                    // 3단계: █(3) ▓(2) ░(1)
-                    if d < r * 0.3 { level = 3 }
-                    else if d < r * 0.6 { level = 2 }
+                    if normalD < 0.3 { level = 3 }
+                    else if normalD < 0.6 { level = 2 }
                     else { level = 1 }
                 }
 
-                // idle 상태에서 가장자리 숨김
                 if !drop.isActive && !drop.showEdge && level <= 1 {
                     continue
                 }
 
-                // 중첩: 기존 값에 더하고 clamp
                 canvas[y][x] = min(canvas[y][x] + level, maxLevel)
             }
         }
+    }
+
+    /// 각도 기반 유기적 노이즈 — 잉크 번짐 윤곽
+    private func organicNoise(angle: Double, seed: Double, phase: Double) -> Double {
+        // 3개 주파수의 사인파 중첩으로 불규칙 윤곽 생성
+        let a1 = sin(angle * 2 + seed) * 0.4
+        let a2 = sin(angle * 3 + seed * 1.7 + phase * .pi) * 0.3
+        let a3 = sin(angle * 5 + seed * 2.3) * 0.2
+        return a1 + a2 + a3
     }
 }

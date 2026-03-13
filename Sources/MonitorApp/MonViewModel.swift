@@ -9,7 +9,9 @@ final class MonViewModel: ObservableObject {
     private var timer: Timer?
     private let store: SessionStore?
     private let pollInterval: TimeInterval = 3
-    let idleTimeout: TimeInterval = 30
+    private let settings = AnimationSettings.shared
+
+    var idleTimeout: TimeInterval { settings.idleTimeout }
 
     init() {
         self.store = try? SessionStore()
@@ -39,8 +41,6 @@ final class MonViewModel: ObservableObject {
         guard let store else { return }
         do {
             sessions = try store.list()
-        } catch {
-            // silent — polling failure shouldn't crash
-        }
+        } catch {}
     }
 }
