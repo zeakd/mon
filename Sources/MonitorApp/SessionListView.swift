@@ -1,54 +1,33 @@
 import SwiftUI
 import MonitorKit
 
-struct SessionListView: View {
+/// 왼클릭 popover에 표시되는 세션 리스트
+struct SessionPopoverView: View {
     @ObservedObject var viewModel: MonViewModel
-    @State private var showSettings = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if showSettings {
-                SettingsView()
+            if viewModel.sessions.isEmpty {
+                Text("no sessions")
+                    .foregroundStyle(.secondary)
+                    .padding()
             } else {
-                sessionList
-            }
-
-            Divider().padding(.vertical, 4)
-
-            HStack {
-                Button(showSettings ? "Back" : "Settings") {
-                    withAnimation { showSettings.toggle() }
+                if !viewModel.activeSessions.isEmpty {
+                    sectionHeader("Active")
+                    ForEach(viewModel.activeSessions) { session in
+                        sessionRow(session, active: true)
+                    }
                 }
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-                    .keyboardShortcut("q")
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 8)
-        }
-        .frame(minWidth: 280)
-    }
-
-    @ViewBuilder
-    private var sessionList: some View {
-        if viewModel.sessions.isEmpty {
-            Text("no sessions")
-                .foregroundStyle(.secondary)
-                .padding()
-        } else {
-            if !viewModel.activeSessions.isEmpty {
-                sectionHeader("Active")
-                ForEach(viewModel.activeSessions) { session in
-                    sessionRow(session, active: true)
-                }
-            }
-            if !viewModel.idleSessions.isEmpty {
-                sectionHeader("Idle")
-                ForEach(viewModel.idleSessions) { session in
-                    sessionRow(session, active: false)
+                if !viewModel.idleSessions.isEmpty {
+                    sectionHeader("Idle")
+                    ForEach(viewModel.idleSessions) { session in
+                        sessionRow(session, active: false)
+                    }
                 }
             }
         }
+        .frame(minWidth: 260)
+        .padding(.vertical, 8)
     }
 
     private func sectionHeader(_ title: String) -> some View {
