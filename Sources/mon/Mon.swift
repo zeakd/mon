@@ -13,10 +13,13 @@ struct Mon {
             switch command {
             case "start":
                 guard args.count > 2 else {
-                    printErr("usage: mon start <title> [--focus <command>]")
+                    printErr("usage: mon start <title> [--focus auto|<command>]")
                     exit(1)
                 }
-                let (title, focusCmd) = parseStart(Array(args[2...]))
+                var (title, focusCmd) = parseStart(Array(args[2...]))
+                if focusCmd == "auto" {
+                    focusCmd = detectFocusCommand()
+                }
                 let id = try store.start(title: title, focusCommand: focusCmd)
                 print(id)
 
@@ -71,20 +74,82 @@ struct Mon {
         return (args.joined(separator: " "), nil)
     }
 
+    /// 현재 터미널 환경을 감지하여 포커스 커맨드 생성
+    static func detectFocusCommand() -> String? {
+        let env = ProcessInfo.processInfo.environment
+
+        // 1. tmux — 가장 정확한 포커스
+        if let _ = env["TMUX"], let pane = env["TMUX_PANE"] {
+            return "tmux select-pane -t \(pane) && tmux select-window -t \(pane)"
+        }
+
+        // 2. iTerm2 — ITERM_SESSION_ID로 특정 탭 포커스
+        if let sessionId = env["ITERM_SESSION_ID"] {
+            // iTerm2 AppleScript로 특정 세션 포커스
+            let script = """
+                tell application "iTerm2"
+                    activate
+                    repeat with w in windows
+                        repeat with t in tabs of w
+                            repeat with s in sessions of t
+                                if unique ID of s is "\(sessionId)" then
+                                    select t
+                                    select w
+                                    return
+                                end if
+                            end repeat
+                        end repeat
+                    end repeat
+                end tell
+                """
+            return "osascript -e '\(script.replacingOccurrences(of: "'", with: "'\\''"))'"
+        }
+
+        // 3. Terminal.app — tty로 특정 탭 포커스
+        if let tty = ttyName() {
+            let script = """
+                tell application "Terminal"
+                    activate
+                    repeat with w in windows
+                        repeat with t in tabs of w
+                            if tty of t is "\(tty)" then
+                                set selected tab of w to t
+                                set index of w to 1
+                                return
+                            end if
+                        end repeat
+                    end repeat
+                end tell
+                """
+            return "osascript -e '\(script.replacingOccurrences(of: "'", with: "'\\''"))'"
+        }
+
+        // 4. fallback — 감지 실패
+        return nil
+    }
+
+    /// 현재 tty 이름 반환 (/dev/ttys003 등)
+    static func ttyName() -> String? {
+        if isatty(STDIN_FILENO) != 0 {
+            return String(cString: ttyname(STDIN_FILENO))
+        }
+        return nil
+    }
+
     static func printHelp() {
         print("""
         mon — session monitor CLI
 
         usage:
-          mon start <title> [--focus <cmd>]  register session, prints id
-          mon ping <id>                      heartbeat
-          mon end <id>                       end session
-          mon ls                             list sessions
-          mon prune                          remove stale (>24h)
+          mon start <title> [--focus auto|<cmd>]  register session, prints id
+          mon ping <id>                           heartbeat
+          mon end <id>                            end session
+          mon ls                                  list sessions
+          mon prune                               remove stale (>24h)
 
         focus:
-          --focus <cmd>  shell command to run when session is clicked
-                         e.g. --focus "osascript -e 'tell app \\"Terminal\\" to activate'"
+          --focus auto   auto-detect terminal (tmux/iTerm2/Terminal.app)
+          --focus <cmd>  custom shell command to run on click
         """)
     }
 
