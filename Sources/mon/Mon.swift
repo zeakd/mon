@@ -13,11 +13,11 @@ struct Mon {
             switch command {
             case "start":
                 guard args.count > 2 else {
-                    printErr("usage: mon start <title>")
+                    printErr("usage: mon start <title> [--focus <command>]")
                     exit(1)
                 }
-                let title = args[2...].joined(separator: " ")
-                let id = try store.start(title: title)
+                let (title, focusCmd) = parseStart(Array(args[2...]))
+                let id = try store.start(title: title, focusCommand: focusCmd)
                 print(id)
 
             case "ping":
@@ -43,7 +43,8 @@ struct Mon {
                     for s in sessions {
                         let status = s.isActive(timeout: timeout) ? "●" : "○"
                         let ago = Int(Date().timeIntervalSince(s.updatedAt))
-                        print("\(status) \(s.id.prefix(8))  \(s.title)  (\(s.machine), \(ago)s ago)")
+                        let focus = s.canFocus ? " [focus]" : ""
+                        print("\(status) \(s.id.prefix(8))  \(s.title)  (\(s.machine), \(ago)s ago)\(focus)")
                     }
                 }
 
@@ -60,16 +61,30 @@ struct Mon {
         }
     }
 
+    /// "title words --focus some command" → ("title words", "some command")
+    static func parseStart(_ args: [String]) -> (title: String, focusCmd: String?) {
+        if let idx = args.firstIndex(of: "--focus") {
+            let titleParts = args[..<idx]
+            let focusParts = args[(idx + 1)...]
+            return (titleParts.joined(separator: " "), focusParts.joined(separator: " "))
+        }
+        return (args.joined(separator: " "), nil)
+    }
+
     static func printHelp() {
         print("""
         mon — session monitor CLI
 
         usage:
-          mon start <title>    register a session, prints id
-          mon ping <id>        heartbeat (update timestamp)
-          mon end <id>         end a session
-          mon ls               list sessions
-          mon prune            remove stale sessions (>24h)
+          mon start <title> [--focus <cmd>]  register session, prints id
+          mon ping <id>                      heartbeat
+          mon end <id>                       end session
+          mon ls                             list sessions
+          mon prune                          remove stale (>24h)
+
+        focus:
+          --focus <cmd>  shell command to run when session is clicked
+                         e.g. --focus "osascript -e 'tell app \\"Terminal\\" to activate'"
         """)
     }
 

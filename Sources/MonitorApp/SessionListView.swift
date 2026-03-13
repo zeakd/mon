@@ -52,9 +52,26 @@ struct SessionPopoverView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if session.canFocus {
+                Image(systemName: "arrow.up.forward.square")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let cmd = session.focusCommand {
+                Task.detached {
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    process.arguments = ["-c", cmd]
+                    try? process.run()
+                }
+            }
+        }
+        .opacity(session.canFocus ? 1.0 : 0.8)
     }
 
     private func timeAgo(_ date: Date) -> String {

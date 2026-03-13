@@ -17,21 +17,27 @@ public final class SessionStore: Sendable {
             self.dbPath = monDir + "/sessions.db"
         }
         try createTable()
+        try migrate()
     }
 
     // MARK: - CRUD
 
-    /// 새 세션 등록, id 반환
-    public func start(title: String, machine: String = ProcessInfo.processInfo.hostName) throws -> String {
+    public func start(title: String, machine: String = ProcessInfo.processInfo.hostName, focusCommand: String? = nil) throws -> String {
         let session = Session(title: title, machine: machine)
-        try execute("""
-            INSERT INTO sessions (id, title, machine, started_at, updated_at)
-            VALUES (?, ?, ?, datetime('now'), datetime('now'))
-            """, params: [session.id, session.title, session.machine])
+        if let fc = focusCommand {
+            try execute("""
+                INSERT INTO sessions (id, title, machine, focus_command, started_at, updated_at)
+                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+                """, params: [session.id, session.title, session.machine, fc])
+        } else {
+            try execute("""
+                INSERT INTO sessions (id, title, machine, started_at, updated_at)
+                VALUES (?, ?, ?, datetime('now'), datetime('now'))
+                """, params: [session.id, session.title, session.machine])
+        }
         return session.id
     }
 
-    /// heartbeat — updated_at 갱신
     public func ping(_ id: String) throws {
         let changed = try executeUpdate(
             "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?",
@@ -41,7 +47,6 @@ public final class SessionStore: Sendable {
         }
     }
 
-    /// 세션 종료 (삭제)
     public func end(_ id: String) throws {
         let changed = try executeUpdate(
             "DELETE FROM sessions WHERE id = ?",
@@ -51,12 +56,10 @@ public final class SessionStore: Sendable {
         }
     }
 
-    /// 전체 세션 목록 (active 먼저, idle 다음)
     public func list() throws -> [Session] {
-        try query("SELECT id, title, machine, started_at, updated_at FROM sessions ORDER BY updated_at DESC")
+        try query("SELECT id, title, machine, started_at, updated_at, focus_command FROM sessions ORDER BY updated_at DESC")
     }
 
-    /// 오래된 세션 정리 (기본 24시간)
     public func prune(olderThan seconds: TimeInterval = 86400) throws {
         try execute(
             "DELETE FROM sessions WHERE updated_at < datetime('now', ?)",
@@ -71,10 +74,31 @@ public final class SessionStore: Sendable {
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 machine TEXT NOT NULL,
+                focus_command TEXT,
                 started_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             )
             """)
+    }
+
+    /// 기존 DB에 focus_command 컬럼이 없으면 추가
+    private func migrate() throws {
+        try withDB { db in
+            var stmt: OpaquePointer?
+            let sql = "PRAGMA table_info(sessions)"
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+
+            var hasFocusCommand = false
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let name = String(cString: sqlite3_column_text(stmt, 1))
+                if name == "focus_command" { hasFocusCommand = true }
+            }
+
+            if !hasFocusCommand {
+                sqlite3_exec(db, "ALTER TABLE sessions ADD COLUMN focus_command TEXT", nil, nil, nil)
+            }
+        }
     }
 
     private func withDB<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
@@ -86,7 +110,6 @@ public final class SessionStore: Sendable {
             throw MonError.dbError(msg)
         }
         defer { sqlite3_close(db) }
-        // WAL mode for concurrent reads
         sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil)
         return try body(db)
     }
@@ -151,13 +174,17 @@ public final class SessionStore: Sendable {
                 let machine = String(cString: sqlite3_column_text(stmt, 2))
                 let startedStr = String(cString: sqlite3_column_text(stmt, 3))
                 let updatedStr = String(cString: sqlite3_column_text(stmt, 4))
+                let focusCmd: String? = sqlite3_column_type(stmt, 5) != SQLITE_NULL
+                    ? String(cString: sqlite3_column_text(stmt, 5))
+                    : nil
 
                 let started = formatter.date(from: startedStr) ?? fallback.date(from: startedStr) ?? Date()
                 let updated = formatter.date(from: updatedStr) ?? fallback.date(from: updatedStr) ?? Date()
 
                 sessions.append(Session(
                     id: id, title: title, machine: machine,
-                    startedAt: started, updatedAt: updated))
+                    startedAt: started, updatedAt: updated,
+                    focusCommand: focusCmd))
             }
             return sessions
         }
